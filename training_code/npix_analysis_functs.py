@@ -844,14 +844,14 @@ def hist_good_units_fr_per_task_phase(data, behavior_data):
     return good_units_idx, bad_units_idx
 
 
-def plot_good_units_v2(spike_times, spike_clusters, good_unit_ids, time_range, fs):
+def plot_units(spike_times, spike_clusters, unit_ids, time_range, fs, behavior_data):
 
-    if len(good_unit_ids) == 0:
+    if len(unit_ids) == 0:
         print("No units labeled 'good' found. Check your cluster_info.tsv!")
         return
 
     # 3. Filter spikes belonging to good units
-    is_good_spike = np.isin(spike_clusters, good_unit_ids)
+    is_good_spike = np.isin(spike_clusters, unit_ids)
     good_spike_times = spike_times[is_good_spike] / fs  # Convert samples to seconds
     good_spike_clusters = spike_clusters[is_good_spike]
 
@@ -861,7 +861,7 @@ def plot_good_units_v2(spike_times, spike_clusters, good_unit_ids, time_range, f
     plot_clusters = good_spike_clusters[mask]
 
     # 5. Organize spikes by unit for eventplot
-    sorted_unit_ids = sorted(good_unit_ids)
+    sorted_unit_ids = sorted(unit_ids)
     spike_trains = []
     for unit_id in sorted_unit_ids:
         unit_mask = plot_clusters == unit_id
@@ -870,24 +870,23 @@ def plot_good_units_v2(spike_times, spike_clusters, good_unit_ids, time_range, f
     # 6. Plotting (Raster Plot using eventplot)
     plt.figure(figsize=(9, 6))
     plt.eventplot(spike_trains, colors='black', lineoffsets=1, linelengths=0.8, linewidths=0.8)
-    plt.axvline(641.311691, color='red', linestyle='--', lw=2)
-    plt.axvline(1871.817141 + 21, color='blue', linestyle='--', lw=2)
-    plt.axvline(1936.694559, color='red', linestyle='--', lw=2)
-    plt.title(f'Raster Plot: {len(good_unit_ids)} "Good" Single Units')
+    plt.axvline(behavior_data['offline_start'][0], color='red', linestyle='--', lw=1, alpha=0.5)
+    plt.title(f'Raster Plot: {len(unit_ids)} Units')
     plt.xlabel('Time (seconds)')
     plt.ylabel('Unit Index')
     plt.xlim(time_range)
-    plt.ylim(-0.5, len(good_unit_ids)-0.5)
+    plt.ylim(-0.5, len(unit_ids)-0.5)
     plt.tight_layout()
     plt.show()
 
 
-def plot_concat_fr(data, behavior_data, th=0.9, win=120):
+def get_bad_concat_units(data, behavior_data, th=0.9, win=30, plot=False):
 
     unit_names = sorted(data['recording'].keys(), key=lambda x: int(x.split('_')[1]))
     num_units = len(unit_names)
 
     bin_size = data['recording'][unit_names[0]]['bin_centers'][1] - data['recording'][unit_names[0]]['bin_centers'][0]
+    bin_centers = data['recording'][unit_names[0]]['bin_centers']
 
     baseline_start_idx = int(behavior_data['baseline_start'][0] / bin_size)
     training_start_idx = int(behavior_data['training_start'][0] / bin_size)
@@ -895,27 +894,37 @@ def plot_concat_fr(data, behavior_data, th=0.9, win=120):
     win_bin = int(win / bin_size)
 
     # 3. Create Figure
-    fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+    if plot:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 4))
     training_frs = []
     offline_frs = []
+    
+    # Get time window for x-axis, relative to concatenation point (offline_start = 0)
+    # +1 is needed because Python slicing is exclusive on the right end
+    time_window = bin_centers[offline_start_idx-win_bin:offline_start_idx+win_bin+1]
+    time_window_relative = time_window - bin_centers[offline_start_idx]
+    
     for i in range(num_units):
         unit_name = unit_names[i]
         unit_fr = data['recording'][unit_name]['fr']
-        training_mean_fr = np.mean(unit_fr[offline_start_idx-win_bin-1:offline_start_idx])
+        training_mean_fr = np.mean(unit_fr[offline_start_idx-win_bin:offline_start_idx])
         offline_mean_fr = np.mean(unit_fr[offline_start_idx:offline_start_idx+win_bin])
         training_frs.append(training_mean_fr)
         offline_frs.append(offline_mean_fr)
         
-        if np.abs(training_mean_fr - offline_mean_fr)/offline_mean_fr > th:
-            ax.plot(unit_fr[offline_start_idx-win_bin-1:offline_start_idx+win_bin], color='red', lw=0.5, alpha=0.6)
-        else:
-            ax.plot(unit_fr[offline_start_idx-win_bin-1:offline_start_idx+win_bin], color='black', lw=0.2, alpha=0.2)
-
-    ax.axvline(win_bin, color='red', linestyle='--', alpha=0.5)
+        if plot:
+            if np.abs(training_mean_fr - offline_mean_fr)/(np.maximum(training_mean_fr,offline_mean_fr)) > th:
+                ax.plot(time_window_relative, unit_fr[offline_start_idx-win_bin:offline_start_idx+win_bin+1], color='red', lw=0.5, alpha=0.6)
+            else:
+                ax.plot(time_window_relative, unit_fr[offline_start_idx-win_bin:offline_start_idx+win_bin+1], color='black', lw=0.2, alpha=0.2)
+    ax.axvline(0, color='red', linestyle='--', alpha=0.5)
+    ax.set_xlabel('Time relative to concatenation (s)')
+    ax.set_ylabel('Firing Rate (Hz)')
+    
     #ax.set_ylim(0, 10)
-
-    bad_idx = np.where((np.abs(np.array(offline_frs) - np.array(training_frs))/np.array(offline_frs) > th))[0]
-    good_idx = np.where((np.abs(np.array(offline_frs) - np.array(training_frs))/np.array(offline_frs) <= th))[0]
+    fr_change_across_concat = np.abs(np.array(training_frs) - np.array(offline_frs))/(np.maximum(np.array(training_frs), np.array(offline_frs)))
+    bad_idx = np.where(fr_change_across_concat > th)[0]
+    good_idx = np.where(fr_change_across_concat <= th)[0]
     return good_idx, bad_idx
 
 
